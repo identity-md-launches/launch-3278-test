@@ -1,0 +1,24 @@
+{
+  "kind": "custom_token",
+  "token": {
+    "contract": "TestToken",
+    "name": "Test",
+    "symbol": "TEST",
+    "decimals": 18,
+    "constructorArgs": [
+      "$factory",
+      "$poolManager",
+      "$launchNumber"
+    ],
+    "totalSupply": "1000000000000000000000000000"
+  },
+  "contracts": [],
+  "pool": {
+    "pairedCurrency": "0x0000000000000000000000000000000000000000",
+    "fee": 12500,
+    "tickSpacing": 60,
+    "initialPrice": "79228162514264337593543950336"
+  },
+  "economics": {"poolBps":9000,"initialMarketCapWei":"25000000000000000000"},
+  "notes": "TestToken mints 1,000,000,000 TEST with 18 decimals once to msg.sender (the launch factory) in its constructor. Ordinary transfers and transferFrom burn 1% of the amount, rounded down in minor units, and deliver the remainder to the recipient. Transfers from the factory or this launch's registered distributor, and transfers to or from the pool manager, are exempt. The distributor is resolved through factory.distributorOf(launchNumber). There is no owner, additional minting or administrative control. No application contracts or initialization calls are required. pool.initialPrice records provenance only; the deployer derives the opening price from economics.initialMarketCapWei and totalSupply."
+}
