@@ -68,11 +68,14 @@ contract TestTokenLookupTest is Test {
         assertTrue(factory.move(token, bob, 100));
         vm.prank(alice);
         assertTrue(token.transfer(pool, 100));
+        assertEq(token.balanceOf(pool), 100);
+        assertEq(token.totalSupply(), 1_000_000_000e18);
+        // Out of the PoolManager is an ordinary transfer whether or not the lookup answers.
         vm.prank(pool);
         assertTrue(token.transfer(bob, 100));
-        assertEq(token.balanceOf(bob), 200);
+        assertEq(token.balanceOf(bob), 199);
         assertEq(token.balanceOf(pool), 0);
-        assertEq(token.totalSupply(), 1_000_000_000e18);
+        assertEq(token.totalSupply(), 1_000_000_000e18 - 1);
     }
 
     function test_recoveredLookupRestoresClaimsWithoutPersistingAnExemption() public {

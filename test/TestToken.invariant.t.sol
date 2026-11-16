@@ -60,8 +60,8 @@ contract TokenHandler is Test {
 
     // The oracle must not ask the token how much to burn or whom to exempt.
     function _expectedExemption(address from, address to) internal view returns (bool) {
-        return from == address(factory) || from == poolManager || to == poolManager
-            || from == factory.distributorOf(token.LAUNCH_NUMBER());
+        // Transfers out of the PoolManager are ordinary: only transfers into it are exempt.
+        return from == address(factory) || to == poolManager || from == factory.distributorOf(token.LAUNCH_NUMBER());
     }
 }
 

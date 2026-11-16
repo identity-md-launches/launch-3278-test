@@ -4,7 +4,7 @@ pragma solidity 0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {TestToken} from "src/TestToken.sol";
-import {MockFactory} from "./mocks/LaunchMocks.sol";
+import {MockFactory, FlashAccountingManager, PoolManagerRelay} from "./mocks/LaunchMocks.sol";
 
 /// @dev Expected state comes only from submitted inputs and the specified economics. In particular,
 /// neither balanceOf, allowance, burnOn nor isBurnExempt is used to construct expected transitions.
@@ -14,6 +14,7 @@ contract TokenAccountingHandler is Test {
     TestToken public immutable token;
     MockFactory public immutable factory;
     address public immutable pool;
+    PoolManagerRelay public immutable relay;
     address[] public actors;
     address public expectedDistributor;
     mapping(address => uint256) public expectedBalance;
@@ -21,6 +22,7 @@ contract TokenAccountingHandler is Test {
     uint256 public expectedBurned;
     uint256 public positiveTransfers;
     uint256 public expectedRejections;
+    uint256 public relaysWithBurn;
     uint256 public lastSupply;
     bool public unexpectedOutcome;
     bool public supplyIncreased;
@@ -29,6 +31,7 @@ contract TokenAccountingHandler is Test {
         token = token_;
         factory = factory_;
         pool = pool_;
+        relay = new PoolManagerRelay(FlashAccountingManager(pool_), token_);
         actors.push(address(factory_));
         actors.push(pool_);
         actors.push(makeAddr("accounting distributor A"));
@@ -109,6 +112,34 @@ contract TokenAccountingHandler is Test {
         _move(operator, owner, address(0), amount, true);
     }
 
+    /// @dev Pays into the PoolManager and takes straight back out in one unlock, touching no pool:
+    /// what any holder can deploy. The leg in is exempt and the leg out is ordinary, so the burn is
+    /// paid exactly once, as on a direct transfer. The manager itself cannot relay (its payment
+    /// would not register as one), so it is not a sender here.
+    function relayThroughPoolManager(uint256 fromSeed, uint256 toSeed, uint256 raw) external {
+        address from = _actor(fromSeed);
+        if (from == pool) from = address(factory);
+        address to = _actor(toSeed);
+        uint256 amount = bound(raw, 0, expectedBalance[from]);
+        vm.prank(from);
+        token.approve(address(relay), amount);
+        vm.prank(from);
+        (bool ok,) = address(relay).call(abi.encodeCall(relay.send, (to, amount)));
+        if (!ok) {
+            unexpectedOutcome = true;
+        } else {
+            // Out of the manager is exempt only when it goes straight back into the manager.
+            uint256 burned = to == pool ? 0 : amount / 100;
+            expectedBalance[from] -= amount;
+            expectedBalance[to] += amount - burned;
+            expectedBurned += burned;
+            if (burned != 0) ++relaysWithBurn;
+            if (amount != 0) ++positiveTransfers;
+        }
+        if (token.allowance(from, address(relay)) != 0) unexpectedOutcome = true;
+        _checkSupply();
+    }
+
     function registerDistributor(uint256 seed) external {
         expectedDistributor = seed % 4 == 0 ? address(0) : actors[2 + seed % 3];
         factory.setDistributor(LAUNCH, expectedDistributor);
@@ -148,7 +179,8 @@ contract TokenAccountingHandler is Test {
             : abi.encodeCall(token.transfer, (to, amount));
         _call(operator, data, errorData);
         if (errorData.length == 0) {
-            bool exempt = from == address(factory) || from == pool || to == pool || from == expectedDistributor;
+            // Only transfers into the PoolManager are exempt; transfers out of it pay the burn.
+            bool exempt = from == address(factory) || to == pool || from == expectedDistributor;
             uint256 burned = exempt ? 0 : amount / 100;
             expectedBalance[from] -= amount;
             expectedBalance[to] += amount - burned; // Also correct when from == to.
@@ -208,10 +240,10 @@ contract TestTokenAccountingInvariantTest is Test {
 
     function setUp() public {
         MockFactory factory = new MockFactory();
-        address pool = makeAddr("accounting pool");
+        address pool = address(new FlashAccountingManager());
         token = factory.deploy(pool, 73);
         handler = new TokenAccountingHandler(token, factory, pool);
-        bytes4[] memory selectors = new bytes4[](10);
+        bytes4[] memory selectors = new bytes4[](11);
         selectors[0] = handler.transfer.selector;
         selectors[1] = handler.transferAll.selector;
         selectors[2] = handler.transferToSelf.selector;
@@ -222,6 +254,7 @@ contract TestTokenAccountingInvariantTest is Test {
         selectors[7] = handler.transferFromToZero.selector;
         selectors[8] = handler.registerDistributor.selector;
         selectors[9] = handler.registerOtherLaunch.selector;
+        selectors[10] = handler.relayThroughPoolManager.selector;
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
@@ -278,6 +311,10 @@ contract TestTokenAccountingInvariantTest is Test {
         handler.transfer(3, 5, 0, 3); // The new distributor remains exempt.
         handler.registerOtherLaunch(4);
         handler.transferAll(5, 4);
+        handler.relayThroughPoolManager(4, 5, 1_000e18); // Relayed: burns once, on the way out.
+        handler.relayThroughPoolManager(2, 1, 1_000e18); // Relayed back into the manager: whole.
+        handler.transfer(1, 4, 1_000e18, 7); // The manager paying out burns like any holder.
+        assertGt(handler.relaysWithBurn(), 0);
         assertGt(handler.positiveTransfers(), 0);
         assertGt(handler.expectedRejections(), 0);
         assertGt(handler.expectedBurned(), 0);

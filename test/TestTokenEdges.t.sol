@@ -190,10 +190,9 @@ contract TestTokenEdgesTest is Test {
     }
 
     function test_allLaunchFlowsEmitOnlyTheGrossTransfer() public {
-        address[4] memory from = [address(factory), distributor, pool, alice];
-        address[4] memory to = [bob, bob, bob, pool];
+        address[4] memory from = [address(factory), distributor, alice, bob];
+        address[4] memory to = [bob, bob, pool, pool];
         factory.move(token, distributor, 100);
-        factory.move(token, pool, 100);
         factory.move(token, alice, 100);
         for (uint256 i; i < from.length; ++i) {
             vm.recordLogs();
@@ -202,6 +201,41 @@ contract TestTokenEdgesTest is Test {
             _assertTransferLogs(vm.getRecordedLogs(), from[i], to[i], 100, 0);
             assertEq(token.totalSupply(), SUPPLY);
         }
+    }
+
+    /// @dev The PoolManager is a permissionless singleton, so what leaves it (a buy, a take, a claim
+    /// redemption) is an ordinary transfer: the burn and its events, exactly as for any holder.
+    function test_transfersOutOfThePoolManagerBurnAndEmitTheBurn() public {
+        factory.move(token, pool, 10_000);
+        address[3] memory to = [bob, distributor, address(factory)];
+        uint256 burned;
+        for (uint256 i; i < to.length; ++i) {
+            uint256 before = token.balanceOf(to[i]);
+            vm.recordLogs();
+            vm.prank(pool);
+            assertTrue(token.transfer(to[i], 1_000));
+            _assertTransferLogs(vm.getRecordedLogs(), pool, to[i], 1_000, 10);
+            assertEq(token.balanceOf(to[i]), before + 990);
+            burned += 10;
+        }
+        // Into itself is the one outgoing leg that is still exempt, because it is also an incoming one.
+        vm.recordLogs();
+        vm.prank(pool);
+        assertTrue(token.transfer(pool, 1_000));
+        _assertTransferLogs(vm.getRecordedLogs(), pool, pool, 1_000, 0);
+        assertEq(token.balanceOf(pool), 7_000);
+        assertEq(token.totalSupply(), SUPPLY - burned);
+    }
+
+    function test_poolManagerSpendingAHoldersAllowanceIntoItselfIsWhole() public {
+        factory.move(token, alice, 1_000);
+        vm.prank(alice);
+        token.approve(pool, 1_000);
+        vm.prank(pool);
+        assertTrue(token.transferFrom(alice, pool, 1_000));
+        assertEq(token.balanceOf(pool), 1_000);
+        assertEq(token.allowance(alice, pool), 0);
+        assertEq(token.totalSupply(), SUPPLY);
     }
 
     function test_distributorReplacementRevokesOldExemptionImmediately() public {

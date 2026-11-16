@@ -11,11 +11,28 @@ environment setup, downloaded fixtures, or signing keys. Test actors are generat
 `makeAddr`; they are not deployment configuration. Fuzz counts and sequence depth are set inline
 in the new test contracts. No project configuration changes are needed.
 
-Verified with Foundry 1.8.3: `forge build` succeeded and the full seeded `forge test` run passed
-79 tests across six suites, with zero failures or skips. The two invariant campaigns completed
-160,768 actions in total with zero handler reverts. A separate coverage run over the 65 unit/fuzz
-tests reported 100% of the token's lines (29/29), statements (46/46), branches (7/7) and functions
-(5/5). Wallet-gas tests were checked against the normal optimized build, not coverage instrumentation.
+Verified for this revision with Foundry 1.9.0: `forge build` succeeded and the full seeded
+`forge test` run passed every test in all six suites, with zero failures or skips. The accounting
+invariant campaign (256 runs of 128 actions over eleven selectors) recorded zero handler reverts.
+
+## Revision: transfers out of the PoolManager now burn
+
+The token was revised (`src/TestToken.sol:125-126`): only transfers *into* the PoolManager are
+exempt now, because a holder could otherwise use the manager's flash accounting to pay in and take
+straight back out and skip the burn. The suite was updated to match, with no change to any other
+expectation:
+
+- Both invariant oracles (`TestToken.invariant.t.sol`, `TestTokenAccounting.invariant.t.sol`) no
+  longer exempt `from == pool`.
+- The accounting campaign's pool is now the `FlashAccountingManager` mock, and a new
+  `relayThroughPoolManager` action has holders route value through it with `PoolManagerRelay`. The
+  ledger expects the burn to be paid exactly once, on the way out, or not at all when the relay
+  sends back into the manager. The relay must also use up its allowance.
+- `TestTokenEdges.t.sol` checks that a transfer out of the manager emits the burn events, that
+  the manager sending to itself is still whole, and that a holder's allowance spent into the manager
+  arrives whole. `TestTokenLookup.t.sol` checks that the manager's outflow burns whether or not the
+  distributor lookup answers.
+- `TestTokenWalletGas.t.sol` runs a relay, where the lookup sits two calls deep, through the wallet-gas helper.
 
 ## Coverage added to the accepted suite
 
@@ -52,25 +69,24 @@ revocation, and stale allowances can be tested across calls.
 Expected reverts are caught and checked against the full custom error. Unexpected successes,
 reverts or return data set a persistent failure flag checked by an invariant. This avoids losing
 failures when the runner permits handler reverts. The fixed-seed campaign completed all 32,768
-actions with zero handler reverts and exercised all ten selectors.
+actions with zero handler reverts and exercised all its selectors (eleven since this revision added the relay).
 
 ## Reported defects and limits
 
-Two failing proofs are preserved in the root `.imd-findings.json`, rather than included as passing
-assertions or weakened tests:
+The two defects reported in the previous round have been fixed in the implementation, and its own
+suite now covers them (`test/TestToken.t.sol`):
 
-- A deterministic expensive distributor lookup causes different results at minimum-success gas:
-  a distributor's 100 TEST claim delivers 99 TEST and burns 1 TEST, while ample gas delivers all
-  100. The ordinary mapping getter passes the wallet-gas checks. The finding explicitly requires
-  an expensive dependency and makes no claim about a deployed factory.
-- `burnOn(uint256.max)` panics before division even though its result fits. This is limited to
-  the public quote helper; transferable amounts cannot reach the overflow boundary.
+- The distributor lookup forwards a fixed `LOOKUP_GAS` and reverts with `LookupOutOfGas` instead of
+  burning a claim at a wallet's gas (`test_distributorClaimAtWalletGasArrivesWholeWithAnExpensiveLookup`,
+  `test_transferShortOfLookupGasRevertsInsteadOfBurningTheClaim`).
+- `burnOn` is defined for every `uint256`, including the maximum (`test_burnOnIsDefinedForEveryAmount`).
 
-Both proofs import only the production token and forge-std and were executed to confirm failure.
-The proofs used during investigation live in disposable scratch space; the report embeds their
-full source. The submitted passing suite does not assert either defective behavior as correct.
+No new defect was found in this revision, so there is no findings file. One design point is
+deliberate rather than a defect: since the manager's outflow is not exempt, a buy delivers 99% of
+what the pool pays out. The manager is still debited exactly what `take` names, so its accounting
+settles and the protected seed-and-swap flow holds.
 
-The supplied protected checks require framework contracts that are not part of this repository.
-The local tests exercise the token's launch transfer semantics with the existing mock factory and
-pool/distributor actors; they do not claim to execute a live Uniswap v4 swap or the external
+The supplied protected checks need framework contracts (v4-core, LaunchLiquidity) that are not in
+this repository. The local tests run the token's launch semantics against the mock factory and the
+flash-accounting manager mock; they do not claim to run a live Uniswap v4 swap or the external
 protected harness. No fork block was assigned.

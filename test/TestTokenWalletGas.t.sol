@@ -3,7 +3,13 @@ pragma solidity 0.8.26;
 
 import {WalletGas} from "./helpers/WalletGas.sol";
 import {TestToken} from "src/TestToken.sol";
-import {MockFactory, RevertingFactory, ShortAnswerFactory} from "./mocks/LaunchMocks.sol";
+import {
+    MockFactory,
+    RevertingFactory,
+    ShortAnswerFactory,
+    FlashAccountingManager,
+    PoolManagerRelay
+} from "./mocks/LaunchMocks.sol";
 
 /// @dev transfer and transferFrom both reach the caught staticcall in launchDistributor.
 contract TestTokenWalletGasTest is WalletGas {
@@ -58,6 +64,21 @@ contract TestTokenWalletGasTest is WalletGas {
         assertSameAtWalletGas(address(factory), address(token), abi.encodeCall(token.transfer, (bob, 100e18)));
         assertSameAtWalletGas(pool, address(token), abi.encodeCall(token.transfer, (bob, 100e18)));
         assertSameAtWalletGas(alice, address(token), abi.encodeCall(token.transfer, (pool, 100e18)));
+    }
+
+    /// @dev A holder relaying through the PoolManager: the leg out of the manager runs the lookup
+    /// inside two nested calls, so it is where a short gas limit would bite first.
+    function test_walletGasRelayThroughPoolManager() public {
+        FlashAccountingManager manager = new FlashAccountingManager();
+        TestToken t = factory.deploy(address(manager), 43);
+        factory.setDistributor(43, distributor);
+        factory.move(t, alice, 1_000e18);
+        factory.move(t, distributor, 1_000e18);
+        PoolManagerRelay relay = new PoolManagerRelay(manager, t);
+        vm.prank(alice);
+        t.approve(address(relay), type(uint256).max);
+        assertSameAtWalletGas(alice, address(relay), abi.encodeCall(relay.send, (bob, 100e18)));
+        assertSameAtWalletGas(distributor, address(t), abi.encodeCall(t.transfer, (bob, 100e18)));
     }
 
     function test_walletGasUnregisteredDistributor() public {
