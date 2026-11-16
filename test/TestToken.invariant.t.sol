@@ -37,7 +37,7 @@ contract TokenHandler is Test {
         address from = actors[fromSeed % actors.length];
         address to = actors[toSeed % actors.length];
         amount = bound(amount, 0, token.balanceOf(from));
-        if (!token.isBurnExempt(from, to)) expectedBurned += token.burnOn(amount);
+        if (!_expectedExemption(from, to)) expectedBurned += amount / 100;
         vm.prank(from);
         token.transfer(to, amount);
     }
@@ -49,13 +49,19 @@ contract TokenHandler is Test {
         amount = bound(amount, 0, token.balanceOf(from));
         vm.prank(from);
         token.approve(spender, amount);
-        if (!token.isBurnExempt(from, to)) expectedBurned += token.burnOn(amount);
+        if (!_expectedExemption(from, to)) expectedBurned += amount / 100;
         vm.prank(spender);
         token.transferFrom(from, to, amount);
     }
 
     function registerDistributor(bool registered) external {
         factory.setDistributor(token.LAUNCH_NUMBER(), registered ? distributor : address(0));
+    }
+
+    // The oracle must not ask the token how much to burn or whom to exempt.
+    function _expectedExemption(address from, address to) internal view returns (bool) {
+        // Transfers out of the PoolManager are ordinary: only transfers into it are exempt.
+        return from == address(factory) || to == poolManager || from == factory.distributorOf(token.LAUNCH_NUMBER());
     }
 }
 
